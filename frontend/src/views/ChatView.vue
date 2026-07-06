@@ -32,12 +32,24 @@ function toolLabel(tool) {
   switch (tool.name) {
     case 'search_course_materials':
       return `检索课程资料「${input.query ?? ''}」`
-    case 'create_task':
-      return `创建任务「${input.title ?? ''}」${input.due_date ? `（${input.due_date}）` : ''}`
-    case 'list_tasks':
-      return '查看待办任务'
+    case 'list_materials':
+      return '查看资料清单'
+    case 'read_material':
+      return `阅读资料 #${input.material_id ?? ''}`
     case 'list_courses':
       return '查看课程列表'
+    case 'create_course':
+      return `创建课程「${input.name ?? ''}」`
+    case 'list_tasks':
+      return '查看待办任务'
+    case 'create_task':
+      return `创建任务「${input.title ?? ''}」${input.due_date ? `（${input.due_date}）` : ''}`
+    case 'update_task':
+      return `更新任务 #${input.task_id ?? ''}`
+    case 'delete_task':
+      return `删除任务 #${input.task_id ?? ''}`
+    case 'create_study_plan':
+      return `保存学习计划「${input.goal ?? ''}」（${(input.daily_tasks || []).length} 项每日任务）`
     default:
       return `调用工具 ${tool.name}`
   }

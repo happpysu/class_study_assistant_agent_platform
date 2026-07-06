@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Course, Task
+from ..models import Course, Material, MaterialChunk, StudyPlan, Task
 from .llm import (
     LLMUnavailableError,
     complete,
@@ -137,7 +137,30 @@ def stream_answer(
 
 # ---------------------------------------------------------------- Agent 工具循环
 
+_STAGE_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "goal": {"type": "string"},
+    },
+    "required": ["name", "start_date", "end_date", "goal"],
+}
+
+_DAILY_TASK_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "date": {"type": "string", "description": "YYYY-MM-DD"},
+        "title": {"type": "string"},
+        "detail": {"type": "string"},
+        "hours": {"type": "number"},
+    },
+    "required": ["date", "title"],
+}
+
 AGENT_TOOLS: list[dict] = [
+    # ---- 资料 ----
     {
         "name": "search_course_materials",
         "description": (
@@ -158,29 +181,77 @@ AGENT_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "list_materials",
+        "description": "查看某门课程的资料清单（ID、文件名、类型、说明），了解有哪些资料可读。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "course_id": {
+                    "type": "integer",
+                    "description": "课程 ID，省略则查当前对话所属课程",
+                }
+            },
+        },
+    },
+    {
+        "name": "read_material",
+        "description": (
+            "读取某个资料的正文内容（按 material_id，最多返回约 4000 字）。"
+            "当检索片段不够、需要通读整份资料（如作业要求、实验指导）时使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_id": {"type": "integer", "description": "资料 ID（可从检索结果或资料清单获得）"},
+            },
+            "required": ["material_id"],
+        },
+    },
+    # ---- 课程 ----
+    {
         "name": "list_courses",
         "description": "列出学生的全部课程（ID、名称、教师、学期），跨课程操作前先调用。",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "create_course",
+        "description": "为学生创建一门新课程。学生说「帮我建一门 XX 课」时使用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "课程名称"},
+                "teacher": {"type": "string", "description": "授课教师（选填）"},
+                "semester": {"type": "string", "description": "学期，如 2026春（选填）"},
+                "description": {"type": "string", "description": "课程简介（选填）"},
+            },
+            "required": ["name"],
+        },
+    },
+    # ---- 任务 ----
+    {
         "name": "list_tasks",
-        "description": "查看学生的待办任务（标题、截止日期、完成状态），安排计划前先了解现有任务。",
+        "description": (
+            "查看学生的待办任务（ID、标题、截止日期、完成状态）。"
+            "安排计划前、修改或删除任务前都应先调用以获取任务 ID。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "include_completed": {
                     "type": "boolean",
                     "description": "是否包含已完成任务，默认 false",
-                }
+                },
+                "course_id": {"type": "integer", "description": "只看某门课程的任务（选填）"},
+                "due_within_days": {
+                    "type": "integer",
+                    "description": "只看 N 天内到期的任务，如 3 表示近三天（选填）",
+                },
             },
         },
     },
     {
         "name": "create_task",
-        "description": (
-            "为学生创建一条待办任务。学生要求安排学习/复习计划时，"
-            "把目标拆解为具体任务后逐条调用本工具创建（每天的任务分开建，标注日期）。"
-        ),
+        "description": "为学生创建一条待办任务（少量任务时逐条创建；成套复习计划请改用 create_study_plan）。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -190,6 +261,52 @@ AGENT_TOOLS: list[dict] = [
                 "course_id": {"type": "integer", "description": "关联课程 ID（选填）"},
             },
             "required": ["title"],
+        },
+    },
+    {
+        "name": "update_task",
+        "description": "修改一条任务：改标题/说明/截止日期，或标记完成/未完成。先用 list_tasks 拿到任务 ID。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "title": {"type": "string", "description": "新标题（选填）"},
+                "detail": {"type": "string", "description": "新说明（选填）"},
+                "due_date": {"type": "string", "description": "新截止日期 YYYY-MM-DD（选填）"},
+                "completed": {"type": "boolean", "description": "完成状态（选填）"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "delete_task",
+        "description": "删除一条任务。先用 list_tasks 确认任务 ID；学生明确要求删除时才使用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer"}},
+            "required": ["task_id"],
+        },
+    },
+    # ---- 学习计划 ----
+    {
+        "name": "create_study_plan",
+        "description": (
+            "保存一份完整学习计划（阶段划分 + 每日任务），每日任务会自动生成为待办。"
+            "学生要求制定复习/备考计划时：先检索资料了解课程内容，再规划阶段与每日任务，"
+            "然后调用本工具一次性保存。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "学习目标"},
+                "deadline": {"type": "string", "description": "截止日期 YYYY-MM-DD"},
+                "daily_hours": {"type": "number", "description": "每日可用小时数，默认 2"},
+                "course_id": {"type": "integer", "description": "关联课程 ID（选填）"},
+                "overview": {"type": "string", "description": "计划总体说明"},
+                "stages": {"type": "array", "items": _STAGE_ITEM_SCHEMA},
+                "daily_tasks": {"type": "array", "items": _DAILY_TASK_ITEM_SCHEMA},
+            },
+            "required": ["goal", "deadline", "daily_tasks"],
         },
     },
 ]
@@ -233,6 +350,46 @@ def make_tool_executor(
             )
         return {"results": results} if results else {"results": [], "hint": "未检索到相关内容，可换关键词重试"}
 
+    def _list_materials(args: dict) -> dict:
+        course_id = int(args.get("course_id") or default_course_id)
+        if _own_course(course_id) is None:
+            return {"error": f"课程 {course_id} 不存在"}
+        rows = db.execute(
+            select(Material).where(Material.course_id == course_id)
+        ).scalars().all()
+        return {
+            "materials": [
+                {
+                    "material_id": m.id,
+                    "filename": m.filename,
+                    "type": m.mtype,
+                    "description": m.description,
+                }
+                for m in rows
+            ]
+        }
+
+    def _read_material(args: dict) -> dict:
+        material_id = int(args.get("material_id", 0))
+        material = db.get(Material, material_id)
+        if material is None or _own_course(material.course_id) is None:
+            return {"error": f"资料 {material_id} 不存在"}
+        chunks = db.execute(
+            select(MaterialChunk.content)
+            .where(MaterialChunk.material_id == material.id)
+            .order_by(MaterialChunk.seq)
+        ).scalars().all()
+        if not chunks:
+            return {"error": f"《{material.filename}》没有可读取的文本内容（可能是未解析的格式）"}
+        # 切片有重叠，去重叠拼接后截断
+        text = chunks[0] + "".join(c[100:] for c in chunks[1:])
+        truncated = len(text) > 4000
+        return {
+            "filename": material.filename,
+            "content": text[:4000],
+            "truncated": truncated,
+        }
+
     def _list_courses(_args: dict) -> dict:
         rows = db.execute(select(Course).where(Course.owner_id == user_id)).scalars().all()
         return {
@@ -242,10 +399,31 @@ def make_tool_executor(
             ]
         }
 
+    def _create_course(args: dict) -> dict:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return {"error": "name 不能为空"}
+        course = Course(
+            owner_id=user_id,
+            name=name[:128],
+            teacher=str(args.get("teacher", ""))[:64],
+            semester=str(args.get("semester", ""))[:32],
+            description=str(args.get("description", ""))[:2000],
+        )
+        db.add(course)
+        db.commit()
+        db.refresh(course)
+        return {"created_course_id": course.id, "name": course.name}
+
     def _list_tasks(args: dict) -> dict:
         stmt = select(Task).where(Task.user_id == user_id)
         if not args.get("include_completed"):
             stmt = stmt.where(Task.completed.is_(False))
+        if args.get("course_id") is not None:
+            stmt = stmt.where(Task.course_id == int(args["course_id"]))
+        if args.get("due_within_days") is not None:
+            horizon = date.today() + timedelta(days=int(args["due_within_days"]))
+            stmt = stmt.where(Task.due_date.is_not(None), Task.due_date <= horizon)
         rows = db.execute(stmt.order_by(Task.due_date.is_(None), Task.due_date)).scalars().all()
         return {
             "tasks": [
@@ -284,11 +462,104 @@ def make_tool_executor(
         db.refresh(task)
         return {"created_task_id": task.id, "title": task.title, "due_date": args.get("due_date")}
 
+    def _get_owned_task(task_id: int) -> Task | None:
+        task = db.get(Task, task_id)
+        return task if task is not None and task.user_id == user_id else None
+
+    def _update_task(args: dict) -> dict:
+        task = _get_owned_task(int(args.get("task_id", 0)))
+        if task is None:
+            return {"error": f"任务 {args.get('task_id')} 不存在"}
+        if args.get("title"):
+            task.title = str(args["title"])[:256]
+        if args.get("detail") is not None:
+            task.detail = str(args["detail"])[:2000]
+        if args.get("due_date"):
+            try:
+                task.due_date = date.fromisoformat(str(args["due_date"]))
+            except ValueError:
+                return {"error": "due_date 格式应为 YYYY-MM-DD"}
+        if args.get("completed") is not None:
+            task.completed = bool(args["completed"])
+        db.commit()
+        return {
+            "updated_task_id": task.id,
+            "title": task.title,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "completed": task.completed,
+        }
+
+    def _delete_task(args: dict) -> dict:
+        task = _get_owned_task(int(args.get("task_id", 0)))
+        if task is None:
+            return {"error": f"任务 {args.get('task_id')} 不存在"}
+        title = task.title
+        db.delete(task)
+        db.commit()
+        return {"deleted": True, "title": title}
+
+    def _create_study_plan(args: dict) -> dict:
+        goal = str(args.get("goal", "")).strip()
+        if not goal:
+            return {"error": "goal 不能为空"}
+        try:
+            deadline = date.fromisoformat(str(args.get("deadline", "")))
+        except ValueError:
+            return {"error": "deadline 格式应为 YYYY-MM-DD"}
+        course_id = args.get("course_id")
+        if course_id is not None and _own_course(int(course_id)) is None:
+            return {"error": f"课程 {course_id} 不存在"}
+        daily_tasks = args.get("daily_tasks") or []
+        if not isinstance(daily_tasks, list) or not daily_tasks:
+            return {"error": "daily_tasks 不能为空"}
+
+        content = {
+            "overview": str(args.get("overview", "")),
+            "stages": args.get("stages") or [],
+            "daily_tasks": daily_tasks,
+        }
+        plan = StudyPlan(
+            user_id=user_id,
+            course_id=int(course_id) if course_id is not None else None,
+            goal=goal[:1000],
+            deadline=deadline,
+            daily_hours=float(args.get("daily_hours") or 2.0),
+            plan_type="single",
+            content_json=json.dumps(content, ensure_ascii=False),
+        )
+        db.add(plan)
+        db.flush()
+        created = 0
+        for item in daily_tasks[:60]:
+            try:
+                due = date.fromisoformat(str(item.get("date", "")))
+            except (ValueError, AttributeError):
+                due = None
+            db.add(
+                Task(
+                    user_id=user_id,
+                    course_id=plan.course_id,
+                    plan_id=plan.id,
+                    title=str(item.get("title", "学习任务"))[:256],
+                    detail=str(item.get("detail", ""))[:2000],
+                    due_date=due,
+                )
+            )
+            created += 1
+        db.commit()
+        return {"created_plan_id": plan.id, "created_task_count": created}
+
     handlers = {
         "search_course_materials": _search,
+        "list_materials": _list_materials,
+        "read_material": _read_material,
         "list_courses": _list_courses,
+        "create_course": _create_course,
         "list_tasks": _list_tasks,
         "create_task": _create_task,
+        "update_task": _update_task,
+        "delete_task": _delete_task,
+        "create_study_plan": _create_study_plan,
     }
 
     def execute(name: str, args: dict) -> str:
@@ -322,10 +593,13 @@ def stream_agent_answer(
         f"今天是 {date.today().isoformat()}。\n\n"
         "工作方式：\n"
         "- 涉及课程知识的问题，先用 search_course_materials 检索资料再回答；"
-        "一次检索不够时换更精炼的关键词多试几次\n"
+        "一次检索不够时换更精炼的关键词多试几次；需要通读整份资料（作业要求、"
+        "实验指导等）时用 list_materials 查清单再 read_material 读全文\n"
         "- 引用资料时在句末标注检索结果中的 [编号]；资料中找不到时明确说明，再给一般性解答\n"
-        "- 学生要求安排学习/复习/备考时：先 list_tasks 了解现状，把目标拆解为带日期的"
-        "具体任务并用 create_task 逐条创建，最后总结创建了哪些任务\n"
+        "- 学生要求制定复习/备考计划时：先检索资料了解课程内容，规划好阶段与每日任务后"
+        "用 create_study_plan 一次性保存（每日任务会自动生成待办）；零散的单条任务用 create_task\n"
+        "- 修改或删除任务、标记完成，都先 list_tasks 拿到任务 ID 再操作；"
+        "删除任务必须是学生明确要求的\n"
         "- 跨课程的问题先用 list_courses 查看课程列表\n"
         "- 与课程无关的简单问题可直接回答，不必调用工具\n"
         "- 用简体中文回答，条理清晰"
