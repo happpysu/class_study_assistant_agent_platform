@@ -37,9 +37,14 @@ export const deleteConversation = (convId) => client.delete(`/conversations/${co
 
 /**
  * 流式发送消息（SSE over fetch）。
- * 事件回调：onMeta({ user_message_id, citations })、onDelta(text)、onDone({ agent_mode }) 。
+ * 事件回调：onMeta({ user_message_id })、onDelta(text)、
+ *          onTool({ name, input })、onDone({ agent_mode, citations })。
  */
-export async function sendMessageStream(convId, content, { onMeta, onDelta, onDone } = {}) {
+export async function sendMessageStream(
+  convId,
+  content,
+  { onMeta, onDelta, onTool, onDone } = {},
+) {
   const token = localStorage.getItem('token')
   const resp = await fetch(`/api/conversations/${convId}/messages/stream`, {
     method: 'POST',
@@ -71,6 +76,7 @@ export async function sendMessageStream(convId, content, { onMeta, onDelta, onDo
     const payload = JSON.parse(data)
     if (event === 'meta') onMeta?.(payload)
     else if (event === 'delta') onDelta?.(payload.text)
+    else if (event === 'tool') onTool?.(payload)
     else if (event === 'done') onDone?.(payload)
   }
   for (;;) {
@@ -93,6 +99,7 @@ export const deletePlan = (id) => client.delete(`/plans/${id}`)
 
 // ---- 待办任务 ----
 export const listTasks = (params = {}) => client.get('/tasks', { params })
+export const getTaskReminders = () => client.get('/tasks/reminders')
 export const createTask = (data) => client.post('/tasks', data)
 export const updateTask = (id, data) => client.put(`/tasks/${id}`, data)
 export const deleteTask = (id) => client.delete(`/tasks/${id}`)

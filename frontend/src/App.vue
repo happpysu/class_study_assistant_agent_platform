@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
+import { getTaskReminders } from './api'
 import { useAuthStore } from './stores/auth'
 
 const route = useRoute()
@@ -13,7 +15,30 @@ const activeMenu = computed(() => {
   return route.path
 })
 
-onMounted(() => auth.fetchMe())
+async function notifyReminders() {
+  try {
+    const { data } = await getTaskReminders()
+    const urgent = data.overdue.length + data.today.length
+    if (urgent === 0) return
+    const parts = []
+    if (data.overdue.length) parts.push(`${data.overdue.length} 项已逾期`)
+    if (data.today.length) parts.push(`${data.today.length} 项今天到期`)
+    ElNotification({
+      title: '任务提醒',
+      message: `你有 ${parts.join('、')}，点击查看`,
+      type: data.overdue.length ? 'warning' : 'info',
+      duration: 8000,
+      onClick: () => router.push('/tasks'),
+    })
+  } catch {
+    /* 提醒失败不影响使用 */
+  }
+}
+
+onMounted(async () => {
+  await auth.fetchMe()
+  if (auth.user) notifyReminders()
+})
 
 function handleLogout() {
   auth.logout()

@@ -13,10 +13,10 @@
 | 用户认证 | 注册 / 登录（JWT）、个人信息管理（昵称、密码） |
 | 课程管理 | 创建 / 编辑 / 删除课程，包含名称、简介、授课教师、学期 |
 | 资料管理 | 按课程上传 / 查看 / 下载 / 删除资料（课件、教材笔记、作业要求、实验指导等），txt / md / pdf / docx / pptx 自动解析入库 |
-| 资料检索 | 按类型、文件名筛选资料；按关键词检索资料**正文片段**（中文按二元词组匹配打分） |
-| Agent 对话 | 选择课程后向智能体提问，系统自动检索相关资料片段辅助回答，**SSE 流式输出**、多轮对话、多个对话记录 |
+| 资料检索 | 按类型、文件名筛选资料；正文片段检索支持**向量语义检索**（配置 Embedding 后），未配置时自动退回关键词打分 |
+| Agent 对话 | 真正的**工具驱动 Agent**：模型持有检索资料 / 查看课程 / 管理任务等工具，自主决定调用哪个、调几轮、何时作答；SSE 流式输出、工具调用过程可视化、多轮对话 |
 | 学习计划 | 输入学习目标、截止时间、每日可用时间，生成阶段任务 + 每日待办 |
-| 待办任务 | 手动添加或由计划自动生成，支持完成勾选、逾期标红、按课程/状态筛选 |
+| 待办任务 | 手动添加、计划生成或 **Agent 对话中直接创建**；完成勾选、逾期标红、状态筛选、**日历视图**、**到期提醒**（登录弹窗 + 提醒面板） |
 | 个人中心 | 课程 / 计划 / 任务 / 对话统计与快捷入口，资料与账号管理 |
 
 ### 高级功能
@@ -25,6 +25,17 @@
 - **知识点整理**：根据课程资料自动提取重点知识点，生成 Markdown 复习提纲
 - **智能任务拆解**：输入「我要两周复习完高等数学期末考试」等目标，自动拆解为阶段任务和每日待办并落库为任务
 - **多课程学习规划**：根据多门课程的截止时间和任务量，生成综合每日学习安排
+
+### Agent 架构（工具循环）
+
+对话不再是「检索 → 拼提示词 → 单次调用」的固定管线，而是标准的 tool-use Agent 循环：
+
+```
+学生消息 ──▶ LLM ──┬─ 决定调用工具 ──▶ 后端执行 ──▶ 结果回传 LLM ──▶（循环，最多 8 轮）
+                   └─ 决定作答 ──▶ 流式输出最终回答（带 [编号] 引用）
+```
+
+模型可用的工具：`search_course_materials`（检索资料，可换关键词多轮重试）、`list_courses`、`list_tasks`、`create_task`（拆解学习目标为带日期的待办）。**由模型自主决定**是否检索、检索几轮、要不要建任务——例如一句「导数是什么？顺便建个明天复习的任务」会触发一次检索 + 一次任务创建。工具调用过程以 🔧 事件实时展示在前端气泡中，检索到的片段自动汇总为可核查的资料引用。
 
 ### 灵活的大模型接入
 
@@ -40,8 +51,8 @@
 | 后端 | Python 3.10+ / FastAPI / SQLAlchemy 2.0 / Pydantic v2 |
 | 数据库 | SQLite（开发默认，可通过 `DATABASE_URL` 切换） |
 | 认证 | JWT（PyJWT）+ PBKDF2 密码哈希 |
-| LLM | Anthropic / OpenAI 双协议，自定义 base_url / api_key / model（默认 Anthropic `claude-opus-4-8`） |
-| 检索 | 资料文本切片 + 中英文关键词打分检索（轻量 RAG） |
+| LLM | Anthropic / OpenAI 双协议 tool-use Agent 循环，自定义 base_url / api_key / model |
+| 检索 | Embedding 向量检索（OpenAI 兼容 /embeddings，任选服务商）+ 关键词打分兜底 |
 
 ## 快速开始
 
@@ -119,10 +130,11 @@ pytest tests/ -v
 │   │   │   ├── plans.py         #   学习计划（单课程/多课程）
 │   │   │   └── tasks.py         #   待办任务
 │   │   └── services/
-│   │       ├── llm.py           # 统一 LLM 客户端（Anthropic/OpenAI 双协议）
-│   │       ├── agent.py         # 问答/知识点/计划生成 + 离线降级
-│   │       ├── retrieval.py     # 资料切片检索
-│   │       ├── extraction.py    # 文本抽取与切片
+│   │       ├── llm.py           # 统一 LLM 客户端（双协议：文本/JSON/流式/Agent 工具循环）
+│   │       ├── agent.py         # Agent 工具集与执行器、知识点/计划生成、离线降级
+│   │       ├── embeddings.py    # 向量嵌入（OpenAI 兼容 /embeddings）
+│   │       ├── retrieval.py     # 向量语义检索 + 关键词兜底
+│   │       ├── extraction.py    # 文本抽取与切片（txt/md/pdf/docx/pptx）
 │   │       └── security.py      # 密码哈希 / JWT
 │   ├── tests/                   # pytest 测试套件
 │   ├── environment.yml          # conda 环境定义
@@ -165,7 +177,8 @@ pytest tests/ -v
 | GET/DELETE | `/materials/{id}/download`、`/materials/{id}` | 下载 / 删除资料 |
 | POST/GET | `/courses/{id}/conversations` | 创建 / 列出对话 |
 | GET/POST | `/conversations/{id}/messages` | 查看历史 / 发送消息（返回引用）★ |
-| POST | `/conversations/{id}/messages/stream` | 流式发送消息（SSE：meta → delta* → done）★ |
+| POST | `/conversations/{id}/messages/stream` | Agent 流式对话（SSE：meta → tool*/delta* → done）★ |
+| GET | `/tasks/reminders` | 任务提醒（已逾期 / 今天 / 3 天内到期） |
 | POST | `/plans` | 生成学习计划（自动拆解任务）★ |
 | POST | `/plans/multi-course` | 多课程综合规划 ★ |
 | GET/POST | `/tasks`，PUT/DELETE `/tasks/{id}` | 任务 CRUD |
@@ -180,6 +193,9 @@ pytest tests/ -v
 | `LLM_API_KEY` | API 密钥，缺省时进入离线降级模式（兼容 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`） | 空 |
 | `LLM_BASE_URL` | 自定义接口地址（代理 / 中转 / 第三方兼容服务） | 官方地址 |
 | `LLM_MODEL` | 模型名，如 `deepseek-chat`、`qwen-plus` | anthropic: `claude-opus-4-8`；openai: `gpt-4o-mini` |
+| `EMBEDDING_API_KEY` | 向量检索密钥（OpenAI 兼容 /embeddings），缺省时用关键词检索 | 空 |
+| `EMBEDDING_BASE_URL` | 嵌入服务地址（如 SiliconFlow `https://api.siliconflow.cn/v1`） | 官方地址 |
+| `EMBEDDING_MODEL` | 嵌入模型，如 `BAAI/bge-m3` | `text-embedding-3-small` |
 | `JWT_SECRET` | JWT 签名密钥，生产环境必须修改 | 开发默认值 |
 | `JWT_EXPIRE_MINUTES` | 登录有效期（分钟） | 10080（7 天） |
 | `MAX_UPLOAD_MB` | 上传大小上限 | 50 |
@@ -197,8 +213,11 @@ pytest tests/ -v
 
 ## Roadmap（后续版本）
 
-- [ ] 向量检索（Embedding）替换关键词检索，提升召回质量
+- [x] 向量检索（Embedding），关键词检索自动兜底
 - [x] 对话流式输出（SSE）
 - [x] 资料支持 docx / pptx 解析
-- [ ] 任务提醒与日历视图
+- [x] 任务提醒与日历视图
+- [x] 工具驱动的 Agent 循环（检索 / 建任务由模型自主决策）
 - [ ] Docker Compose 一键部署
+- [ ] Agent 工具扩展：删除/修改任务、生成复习提纲、跨课程综合规划
+- [ ] 对话内工具调用需用户确认的权限机制

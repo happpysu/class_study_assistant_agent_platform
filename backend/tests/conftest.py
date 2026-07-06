@@ -15,6 +15,9 @@ for _var in (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
+    "EMBEDDING_API_KEY",
+    "EMBEDDING_BASE_URL",
+    "EMBEDDING_MODEL",
 ):
     os.environ[_var] = ""
 

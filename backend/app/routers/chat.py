@@ -194,8 +194,6 @@ def send_message_stream(
         .all()
     )
     history = [{"role": m.role, "content": m.content} for m in history_rows]
-    chunks = search_chunks(db, course.id, payload.content, limit=6)
-    citations = agent.citations_for(chunks)
 
     # 用户消息先落库，流中断也不丢提问
     user_msg = Message(conversation_id=conv.id, role="user", content=payload.content)
@@ -207,21 +205,27 @@ def send_message_stream(
 
     def event_stream():
         parts: list[str] = []
+        citations: list[dict] = []  # 由 Agent 检索工具在循环中填充
         agent_mode = "llm"
-        yield _sse("meta", {"user_message_id": user_msg.id, "citations": citations})
+        yield _sse("meta", {"user_message_id": user_msg.id})
         try:
-            for delta in agent.stream_answer(
-                course.name, payload.content, chunks, history
+            for kind, data in agent.stream_agent_answer(
+                db, current.id, course, payload.content, history, citations
             ):
-                parts.append(delta)
-                yield _sse("delta", {"text": delta})
+                if kind == "text":
+                    parts.append(data)
+                    yield _sse("delta", {"text": data})
+                elif kind == "tool":
+                    yield _sse("tool", data)
         except LLMUnavailableError:
             if parts:  # 生成中途断流：保留已有内容并注明
                 notice = "\n\n（回答在生成过程中中断，以上为部分内容）"
                 parts.append(notice)
                 yield _sse("delta", {"text": notice})
-            else:  # 完全不可用：整体降级
+            else:  # 完全不可用：整体降级为关键词检索
                 agent_mode = "fallback"
+                chunks = search_chunks(db, course.id, payload.content, limit=6)
+                citations = agent.citations_for(chunks)
                 text = agent.fallback_answer(payload.content, chunks)
                 parts.append(text)
                 yield _sse("delta", {"text": text})
@@ -237,7 +241,11 @@ def send_message_stream(
         db.refresh(assistant_msg)
         yield _sse(
             "done",
-            {"assistant_message_id": assistant_msg.id, "agent_mode": agent_mode},
+            {
+                "assistant_message_id": assistant_msg.id,
+                "agent_mode": agent_mode,
+                "citations": citations,
+            },
         )
 
     return StreamingResponse(

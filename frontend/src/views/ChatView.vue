@@ -27,6 +27,22 @@ const msgListEl = ref(null)
 
 const renderMd = (text) => marked.parse(text || '')
 
+function toolLabel(tool) {
+  const input = tool.input || {}
+  switch (tool.name) {
+    case 'search_course_materials':
+      return `检索课程资料「${input.query ?? ''}」`
+    case 'create_task':
+      return `创建任务「${input.title ?? ''}」${input.due_date ? `（${input.due_date}）` : ''}`
+    case 'list_tasks':
+      return '查看待办任务'
+    case 'list_courses':
+      return '查看课程列表'
+    default:
+      return `调用工具 ${tool.name}`
+  }
+}
+
 async function refreshConversations() {
   const { data } = await listCourseConversations(courseId)
   conversations.value = data
@@ -68,6 +84,7 @@ async function send() {
     role: 'assistant',
     content: '',
     citations: [],
+    toolEvents: [],
     streaming: true,
   }
   messages.value.push(userMsg, assistantMsg)
@@ -77,14 +94,18 @@ async function send() {
     await sendMessageStream(activeConvId.value, content, {
       onMeta: (meta) => {
         userMsg.id = meta.user_message_id
-        assistantMsg.citations = meta.citations
       },
       onDelta: (text) => {
         assistantMsg.content += text
         scrollToBottom()
       },
+      onTool: (tool) => {
+        assistantMsg.toolEvents.push(toolLabel(tool))
+        scrollToBottom()
+      },
       onDone: (result) => {
         assistantMsg.id = result.assistant_message_id
+        assistantMsg.citations = result.citations || []
         assistantMsg.streaming = false
         lastAgentMode.value = result.agent_mode
       },
@@ -148,11 +169,16 @@ onMounted(async () => {
         <div ref="msgListEl" class="msg-list">
           <el-empty
             v-if="!messages.length"
-            description="围绕本课程的资料向 Agent 提问吧，例如：第二章的重点是什么？"
+            description="向 Agent 提问或下达指令：它会自主检索资料回答（带引用），也能帮你拆解目标、创建待办任务"
           />
           <div v-for="msg in messages" :key="msg.id" class="msg" :class="msg.role">
             <div class="bubble">
               <template v-if="msg.role === 'assistant'">
+                <div v-if="msg.toolEvents?.length" class="tools">
+                  <div v-for="(label, i) in msg.toolEvents" :key="i" class="tool-line">
+                    🔧 {{ label }}
+                  </div>
+                </div>
                 <div v-if="msg.content" class="md" v-html="renderMd(msg.content)" />
                 <span v-else-if="msg.streaming" class="typing">思考中…</span>
               </template>
@@ -288,6 +314,16 @@ onMounted(async () => {
 }
 .typing {
   color: #909399;
+}
+.tools {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #dcdfe6;
+}
+.tool-line {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.8;
 }
 .citations {
   margin-top: 8px;

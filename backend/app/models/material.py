@@ -32,3 +32,4 @@ class MaterialChunk(Base):
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), index=True)
     seq: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text)
+    embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # 向量（JSON 数组）

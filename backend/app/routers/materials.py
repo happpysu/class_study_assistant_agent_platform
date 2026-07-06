@@ -12,6 +12,7 @@ from ..database import get_db
 from ..models import Course, Material, MaterialChunk, User
 from ..models.material import MATERIAL_TYPES
 from ..schemas.material import ChunkHit, MaterialOut
+from ..services import embeddings
 from ..services.extraction import chunk_text, extract_text
 from ..services.retrieval import search_chunks
 from ..services.security import get_current_user
@@ -68,10 +69,23 @@ async def upload_material(
     db.flush()
 
     text = extract_text(stored_path)
-    for seq, chunk in enumerate(chunk_text(text)):
+    chunks = chunk_text(text)
+    vectors: list | None = None
+    if chunks and embeddings.is_configured():
+        try:
+            vectors = embeddings.embed_texts(chunks)
+        except embeddings.EmbeddingUnavailableError:
+            vectors = None  # 嵌入失败不阻断上传，检索退回关键词模式
+    import json as _json
+
+    for seq, chunk in enumerate(chunks):
         db.add(
             MaterialChunk(
-                material_id=material.id, course_id=course.id, seq=seq, content=chunk
+                material_id=material.id,
+                course_id=course.id,
+                seq=seq,
+                content=chunk,
+                embedding_json=_json.dumps(vectors[seq]) if vectors else None,
             )
         )
     db.commit()

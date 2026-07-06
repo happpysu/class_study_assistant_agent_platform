@@ -168,6 +168,148 @@ def _stream_openai(key: str, system: str, user_content: str, max_tokens: int):
             yield delta
 
 
+# ---------------------------------------------------------------- Agent 工具循环
+
+_MAX_TOOL_ITERATIONS = 8
+
+
+def stream_agent(system: str, user_content: str, tools: list[dict], execute):
+    """通用 Agent 循环（流式）：模型自主决定调用哪些工具、调用几轮、何时停止。
+
+    tools 使用中立格式 [{name, description, input_schema}]，内部转换为各协议格式。
+    execute(name, args: dict) -> str 由调用方提供（工具的实际执行器）。
+    产出事件：("text", 文本增量) | ("tool", {"name", "input"})。
+    """
+    key = _api_key()
+    if not key:
+        raise LLMUnavailableError("未配置 LLM_API_KEY")
+    try:
+        if provider() == "openai":
+            yield from _agent_openai(key, system, user_content, tools, execute)
+        else:
+            yield from _agent_anthropic(key, system, user_content, tools, execute)
+    except LLMUnavailableError:
+        raise
+    except Exception as exc:
+        logger.warning("Agent 循环失败 [%s/%s]: %s", provider(), model_name(), exc)
+        raise LLMUnavailableError(str(exc)) from exc
+
+
+def _agent_anthropic(key: str, system: str, user_content: str, tools: list[dict], execute):
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key, base_url=_base_url())
+    messages = [{"role": "user", "content": user_content}]
+    for _ in range(_MAX_TOOL_ITERATIONS):
+        with client.messages.stream(
+            model=model_name(),
+            max_tokens=4096,
+            system=system,
+            tools=tools,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                if text:
+                    yield ("text", text)
+            response = stream.get_final_message()
+
+        tool_uses = [b for b in response.content if b.type == "tool_use"]
+        if not tool_uses:
+            return
+        messages.append({"role": "assistant", "content": response.content})
+        results = []
+        for block in tool_uses:
+            args = dict(block.input or {})
+            yield ("tool", {"name": block.name, "input": args})
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": execute(block.name, args),
+                }
+            )
+        messages.append({"role": "user", "content": results})
+    yield ("text", "\n\n（已达到最大工具调用轮数，以上为当前结论）")
+
+
+def _agent_openai(key: str, system: str, user_content: str, tools: list[dict], execute):
+    from openai import OpenAI
+
+    client = OpenAI(api_key=key, base_url=_base_url())
+    oa_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
+        }
+        for t in tools
+    ]
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content},
+    ]
+    for _ in range(_MAX_TOOL_ITERATIONS):
+        stream = client.chat.completions.create(
+            model=model_name(),
+            max_tokens=4096,
+            stream=True,
+            tools=oa_tools,
+            messages=messages,
+        )
+        text_parts: list[str] = []
+        calls: dict[int, dict] = {}  # 流式 tool_call 按 index 分片累积
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                text_parts.append(delta.content)
+                yield ("text", delta.content)
+            for tc in delta.tool_calls or []:
+                slot = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                if tc.function and tc.function.name:
+                    slot["name"] += tc.function.name
+                if tc.function and tc.function.arguments:
+                    slot["args"] += tc.function.arguments
+
+        if not calls:
+            return
+        ordered = [calls[i] for i in sorted(calls)]
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "".join(text_parts) or None,
+                "tool_calls": [
+                    {
+                        "id": c["id"],
+                        "type": "function",
+                        "function": {"name": c["name"], "arguments": c["args"]},
+                    }
+                    for c in ordered
+                ],
+            }
+        )
+        for c in ordered:
+            try:
+                args = json.loads(c["args"]) if c["args"] else {}
+            except json.JSONDecodeError:
+                args = {}
+            yield ("tool", {"name": c["name"], "input": args})
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": c["id"],
+                    "content": execute(c["name"], args),
+                }
+            )
+    yield ("text", "\n\n（已达到最大工具调用轮数，以上为当前结论）")
+
+
 def _extract_json(text: str) -> dict:
     """容错提取 JSON：剥离代码块围栏，截取首个 { 到末个 } 之间的内容。"""
     cleaned = text.strip()

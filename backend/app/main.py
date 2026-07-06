@@ -1,6 +1,7 @@
 """课程学习助手 Agent 平台 — FastAPI 入口。"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text as sa_text
 
 from .config import settings
 from .database import Base, engine
@@ -9,6 +10,24 @@ from .services import llm
 from . import models  # noqa: F401  确保所有模型注册到 Base.metadata
 
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_schema() -> None:
+    """轻量迁移：create_all 不会给已存在的表加列，这里为旧库补新增列。"""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        cols = [
+            row[1]
+            for row in conn.execute(sa_text("PRAGMA table_info(material_chunks)"))
+        ]
+        if cols and "embedding_json" not in cols:
+            conn.execute(
+                sa_text("ALTER TABLE material_chunks ADD COLUMN embedding_json TEXT")
+            )
+
+
+_ensure_schema()
 
 app = FastAPI(
     title="课程学习助手 Agent 平台",

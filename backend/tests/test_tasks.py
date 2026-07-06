@@ -25,6 +25,22 @@ def test_task_crud(client, auth_headers):
     )
 
 
+def test_task_reminders(client, auth_headers):
+    from datetime import date, timedelta
+
+    today = date.today()
+    for title, delta in (("逾期任务", -2), ("今日任务", 0), ("临近任务", 2), ("远期任务", 30)):
+        client.post(
+            "/api/tasks",
+            json={"title": title, "due_date": (today + timedelta(days=delta)).isoformat()},
+            headers=auth_headers,
+        )
+    data = client.get("/api/tasks/reminders", headers=auth_headers).json()
+    assert [t["title"] for t in data["overdue"]] == ["逾期任务"]
+    assert [t["title"] for t in data["today"]] == ["今日任务"]
+    assert [t["title"] for t in data["upcoming"]] == ["临近任务"]  # 远期任务不在提醒范围
+
+
 def test_task_not_found(client, auth_headers):
     assert (
         client.put(

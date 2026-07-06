@@ -1,4 +1,6 @@
-"""待办任务管理。"""
+"""待办任务管理与到期提醒。"""
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +11,8 @@ from ..schemas.task import TaskCreate, TaskOut, TaskUpdate
 from ..services.security import get_current_user
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+_UPCOMING_DAYS = 3
 
 
 def _get_owned_task(task_id: int, current: User, db: Session) -> Task:
@@ -52,6 +56,41 @@ def list_tasks(
         .scalars()
         .all()
     )
+
+
+@router.get("/reminders")
+def task_reminders(
+    current: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """任务提醒：已逾期 / 今天到期 / 近 3 天到期 的未完成任务。"""
+    today = date.today()
+    horizon = today + timedelta(days=_UPCOMING_DAYS)
+    rows = (
+        db.execute(
+            select(Task)
+            .where(
+                Task.user_id == current.id,
+                Task.completed.is_(False),
+                Task.due_date.is_not(None),
+                Task.due_date <= horizon,
+            )
+            .order_by(Task.due_date)
+        )
+        .scalars()
+        .all()
+    )
+    grouped = {"overdue": [], "today": [], "upcoming": []}
+    for task in rows:
+        if task.due_date < today:
+            grouped["overdue"].append(task)
+        elif task.due_date == today:
+            grouped["today"].append(task)
+        else:
+            grouped["upcoming"].append(task)
+    return {
+        key: [TaskOut.model_validate(t) for t in items]
+        for key, items in grouped.items()
+    }
 
 
 @router.put("/{task_id}", response_model=TaskOut)
