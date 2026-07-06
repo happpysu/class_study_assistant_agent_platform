@@ -1,22 +1,19 @@
-"""Agent 服务：调用 Claude API 实现课程问答（带引用）、知识点整理、学习计划生成。
+"""Agent 服务：课程问答（带引用）、知识点整理、学习计划生成。
 
-未配置 ANTHROPIC_API_KEY（或调用失败）时自动降级为本地规则实现，
+底层通过 services.llm 统一客户端调用大模型（支持 Anthropic / OpenAI 协议，
+可自定义 base_url / api_key）。未配置密钥或调用失败时自动降级为本地规则实现，
 保证系统在无 LLM 环境下仍可运行演示，返回值中 agent_mode 标记来源。
 """
-import json
 import logging
-import os
 from datetime import date, timedelta
 from typing import Any
 
-from ..config import settings
+from .llm import LLMUnavailableError, complete, complete_json
 from .retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 _EXCERPT_LEN = 120
-_MAX_TOKENS_ANSWER = 4096
-_MAX_TOKENS_PLAN = 8192
 
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -56,57 +53,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-
-class AgentUnavailableError(Exception):
-    """LLM 不可用（未配置密钥或调用失败）。"""
-
-
-def _get_client():
-    import anthropic
-
-    if not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")):
-        raise AgentUnavailableError("未配置 ANTHROPIC_API_KEY")
-    return anthropic.Anthropic()
-
-
-def _call_text(system: str, user_content: str, max_tokens: int = _MAX_TOKENS_ANSWER) -> str:
-    """普通文本调用，任何异常统一收敛为 AgentUnavailableError。"""
-    try:
-        client = _get_client()
-        response = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=max_tokens,
-            thinking={"type": "adaptive"},
-            system=system,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        return "".join(b.text for b in response.content if b.type == "text")
-    except AgentUnavailableError:
-        raise
-    except Exception as exc:
-        logger.warning("LLM 调用失败: %s", exc)
-        raise AgentUnavailableError(str(exc)) from exc
-
-
-def _call_json(system: str, user_content: str, schema: dict) -> dict:
-    """结构化输出调用（output_config.format 保证合法 JSON）。"""
-    try:
-        client = _get_client()
-        response = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=_MAX_TOKENS_PLAN,
-            thinking={"type": "adaptive"},
-            system=system,
-            output_config={"format": {"type": "json_schema", "schema": schema}},
-            messages=[{"role": "user", "content": user_content}],
-        )
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
-    except AgentUnavailableError:
-        raise
-    except Exception as exc:
-        logger.warning("LLM 结构化调用失败: %s", exc)
-        raise AgentUnavailableError(str(exc)) from exc
+_OFFLINE_HINT = "在 backend/.env 中配置 LLM_API_KEY（支持 Anthropic / OpenAI 兼容接口）以启用智能功能。"
 
 
 def _citations_from(chunks: list[RetrievedChunk]) -> list[dict]:
@@ -149,9 +96,9 @@ def answer_question(
             ) + "\n\n"
         context = _context_block(chunks) if chunks else "（本课程暂无可检索的资料片段）"
         user_content = f"{history_text}课程资料片段：\n{context}\n\n学生问题：{question}"
-        answer = _call_text(system, user_content)
+        answer = complete(system, user_content)
         return {"answer": answer, "citations": citations, "agent_mode": "llm"}
-    except AgentUnavailableError:
+    except LLMUnavailableError:
         return {
             "answer": _fallback_answer(question, chunks),
             "citations": citations,
@@ -163,7 +110,7 @@ def _fallback_answer(question: str, chunks: list[RetrievedChunk]) -> str:
     if not chunks:
         return (
             "【离线模式】当前未配置大模型 API，且课程资料中未检索到与问题相关的内容。"
-            "请先上传课程资料，或在 backend/.env 中配置 ANTHROPIC_API_KEY 以启用智能问答。"
+            f"请先上传课程资料，或{_OFFLINE_HINT}"
         )
     lines = [
         "【离线模式】当前未配置大模型 API，以下是从课程资料中检索到的相关片段：",
@@ -191,9 +138,9 @@ def summarize_knowledge(course_name: str, chunks: list[RetrievedChunk]) -> dict:
             "生成一份 Markdown 格式的复习提纲：按主题分节，每个知识点一句话概括，"
             "重要概念加粗，并在相关知识点后用 [编号] 标注来源资料。"
         )
-        summary = _call_text(system, f"课程资料片段：\n{_context_block(chunks)}")
+        summary = complete(system, f"课程资料片段：\n{_context_block(chunks)}")
         return {"summary": summary, "sources": sources, "agent_mode": "llm"}
-    except AgentUnavailableError:
+    except LLMUnavailableError:
         preview = "\n".join(
             f"- 《{c.material_name}》片段{c.chunk_id}: {c.content[:80]}…" for c in chunks[:10]
         )
@@ -223,9 +170,9 @@ def generate_plan(
             f"学习目标：{goal}\n截止日期：{deadline.isoformat()}\n"
             f"每日可用时间：{daily_hours} 小时"
         )
-        content = _call_json(system, user_content, PLAN_SCHEMA)
+        content = complete_json(system, user_content, PLAN_SCHEMA)
         return {"content": content, "agent_mode": "llm"}
-    except AgentUnavailableError:
+    except LLMUnavailableError:
         return {
             "content": _fallback_plan(goal, today, deadline, daily_hours, course_name),
             "agent_mode": "fallback",
@@ -250,9 +197,9 @@ def generate_multi_plan(course_goals: list[dict], daily_hours: float) -> dict:
             f"今天是 {today.isoformat()}。\n各课程目标：\n{goals_text}\n"
             f"每日总可用时间：{daily_hours} 小时"
         )
-        content = _call_json(system, user_content, PLAN_SCHEMA)
+        content = complete_json(system, user_content, PLAN_SCHEMA)
         return {"content": content, "agent_mode": "llm"}
-    except AgentUnavailableError:
+    except LLMUnavailableError:
         return {
             "content": _fallback_multi_plan(course_goals, today, daily_hours),
             "agent_mode": "fallback",
@@ -295,7 +242,7 @@ def _fallback_plan(
     return {
         "overview": (
             f"【离线模式】未配置大模型 API，按剩余 {total_days} 天均匀生成基础计划。"
-            "配置 ANTHROPIC_API_KEY 后可获得智能拆解的个性化计划。"
+            f"{_OFFLINE_HINT}"
         ),
         "stages": stages,
         "daily_tasks": daily_tasks,
@@ -330,7 +277,7 @@ def _fallback_multi_plan(course_goals: list[dict], today: date, daily_hours: flo
     return {
         "overview": (
             f"【离线模式】按 {len(course_goals)} 门课程平均分配每日 {daily_hours} 小时。"
-            "配置 ANTHROPIC_API_KEY 后可获得按紧迫度智能分配的综合安排。"
+            f"{_OFFLINE_HINT}"
         ),
         "stages": stages,
         "daily_tasks": daily_tasks,

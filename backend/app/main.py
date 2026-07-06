@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import Base, engine
 from .routers import auth, chat, courses, materials, plans, tasks
+from .services import llm
 from . import models  # noqa: F401  确保所有模型注册到 Base.metadata
 
 Base.metadata.create_all(bind=engine)
@@ -33,4 +34,4 @@ app.include_router(tasks.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "model": settings.anthropic_model}
+    return {"status": "ok", "llm": llm.info()}

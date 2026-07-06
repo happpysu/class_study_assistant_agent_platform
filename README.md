@@ -26,9 +26,11 @@
 - **智能任务拆解**：输入「我要两周复习完高等数学期末考试」等目标，自动拆解为阶段任务和每日待办并落库为任务
 - **多课程学习规划**：根据多门课程的截止时间和任务量，生成综合每日学习安排
 
-### 离线降级模式
+### 灵活的大模型接入
 
-未配置 `ANTHROPIC_API_KEY` 时系统仍可完整运行：问答返回检索到的资料片段、计划按天数均匀拆分，接口以 `agent_mode: "fallback"` 标记，前端有对应提示。配置 Key 后自动切换为大模型智能回答。
+- **双协议支持**：`anthropic` 官方协议 与 `openai` 兼容协议 任选，DeepSeek、通义千问、Kimi、one-api 中转站等 OpenAI 兼容服务均可直接接入
+- **自定义 base_url / api_key / model**：通过 `.env` 三个变量即可切换服务商，无需改代码
+- **离线降级模式**：未配置 `LLM_API_KEY` 时系统仍可完整运行——问答返回检索到的资料片段、计划按天数均匀拆分，接口以 `agent_mode: "fallback"` 标记，前端有对应提示
 
 ## 技术栈
 
@@ -38,7 +40,7 @@
 | 后端 | Python 3.10+ / FastAPI / SQLAlchemy 2.0 / Pydantic v2 |
 | 数据库 | SQLite（开发默认，可通过 `DATABASE_URL` 切换） |
 | 认证 | JWT（PyJWT）+ PBKDF2 密码哈希 |
-| LLM | Anthropic Claude API（默认 `claude-opus-4-8`，结构化输出生成计划 JSON） |
+| LLM | Anthropic / OpenAI 双协议，自定义 base_url / api_key / model（默认 Anthropic `claude-opus-4-8`） |
 | 检索 | 资料文本切片 + 中英文关键词打分检索（轻量 RAG） |
 
 ## 快速开始
@@ -51,12 +53,13 @@ python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env             # 编辑 .env，填入 ANTHROPIC_API_KEY（可选）
+cp .env.example .env             # 编辑 .env，配置大模型（可选，见下方环境变量表）
 uvicorn app.main:app --reload --port 8000
 ```
 
 - 接口文档（Swagger UI）：http://localhost:8000/docs
 - 不配置 API Key 也能启动，Agent 功能进入离线降级模式
+- `GET /api/health` 可查看当前生效的 LLM 提供商 / 模型 / 配置状态
 
 ### 2. 前端
 
@@ -95,7 +98,8 @@ pytest tests/ -v
 │   │   │   ├── plans.py         #   学习计划（单课程/多课程）
 │   │   │   └── tasks.py         #   待办任务
 │   │   └── services/
-│   │       ├── agent.py         # Claude API 调用 + 离线降级
+│   │       ├── llm.py           # 统一 LLM 客户端（Anthropic/OpenAI 双协议）
+│   │       ├── agent.py         # 问答/知识点/计划生成 + 离线降级
 │   │       ├── retrieval.py     # 资料切片检索
 │   │       ├── extraction.py    # 文本抽取与切片
 │   │       └── security.py      # 密码哈希 / JWT
@@ -149,8 +153,10 @@ pytest tests/ -v
 
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | Anthropic API 密钥，缺省时进入离线降级模式 | 空 |
-| `ANTHROPIC_MODEL` | 使用的 Claude 模型 | `claude-opus-4-8` |
+| `LLM_PROVIDER` | 协议类型：`anthropic` / `openai`（OpenAI 兼容） | `anthropic` |
+| `LLM_API_KEY` | API 密钥，缺省时进入离线降级模式（兼容 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`） | 空 |
+| `LLM_BASE_URL` | 自定义接口地址（代理 / 中转 / 第三方兼容服务） | 官方地址 |
+| `LLM_MODEL` | 模型名，如 `deepseek-chat`、`qwen-plus` | anthropic: `claude-opus-4-8`；openai: `gpt-4o-mini` |
 | `JWT_SECRET` | JWT 签名密钥，生产环境必须修改 | 开发默认值 |
 | `JWT_EXPIRE_MINUTES` | 登录有效期（分钟） | 10080（7 天） |
 | `MAX_UPLOAD_MB` | 上传大小上限 | 50 |

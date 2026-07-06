@@ -5,8 +5,15 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="csa_test_")
 os.environ["DATA_DIR"] = _tmp
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
-os.environ.pop("ANTHROPIC_API_KEY", None)
-os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+for _var in (
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+):
+    os.environ.pop(_var, None)
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

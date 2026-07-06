@@ -27,7 +27,6 @@ class Settings:
     jwt_secret: str = os.getenv("JWT_SECRET", _DEFAULT_SECRET)
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))
-    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
     cors_origins: tuple = tuple(
         o.strip()
