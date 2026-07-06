@@ -35,6 +35,56 @@ export const sendMessage = (convId, content) =>
   client.post(`/conversations/${convId}/messages`, { content })
 export const deleteConversation = (convId) => client.delete(`/conversations/${convId}`)
 
+/**
+ * 流式发送消息（SSE over fetch）。
+ * 事件回调：onMeta({ user_message_id, citations })、onDelta(text)、onDone({ agent_mode }) 。
+ */
+export async function sendMessageStream(convId, content, { onMeta, onDelta, onDone } = {}) {
+  const token = localStorage.getItem('token')
+  const resp = await fetch(`/api/conversations/${convId}/messages/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ content }),
+  })
+  if (!resp.ok) {
+    let detail = '发送失败，请稍后重试'
+    try {
+      const body = await resp.json()
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch {
+      /* 非 JSON 错误体，使用默认提示 */
+    }
+    throw new Error(detail)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const handleFrame = (frame) => {
+    let event = 'message'
+    let data = ''
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event: ')) event = line.slice(7).trim()
+      else if (line.startsWith('data: ')) data += line.slice(6)
+    }
+    if (!data) return
+    const payload = JSON.parse(data)
+    if (event === 'meta') onMeta?.(payload)
+    else if (event === 'delta') onDelta?.(payload.text)
+    else if (event === 'done') onDone?.(payload)
+  }
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      handleFrame(buffer.slice(0, sep))
+      buffer = buffer.slice(sep + 2)
+    }
+  }
+}
+
 // ---- 学习计划 ----
 export const listPlans = () => client.get('/plans')
 export const createPlan = (data) => client.post('/plans', data)

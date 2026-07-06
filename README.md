@@ -12,9 +12,9 @@
 | --- | --- |
 | 用户认证 | 注册 / 登录（JWT）、个人信息管理（昵称、密码） |
 | 课程管理 | 创建 / 编辑 / 删除课程，包含名称、简介、授课教师、学期 |
-| 资料管理 | 按课程上传 / 查看 / 下载 / 删除资料（课件、教材笔记、作业要求、实验指导等），txt / md / pdf 自动解析入库 |
+| 资料管理 | 按课程上传 / 查看 / 下载 / 删除资料（课件、教材笔记、作业要求、实验指导等），txt / md / pdf / docx / pptx 自动解析入库 |
 | 资料检索 | 按类型、文件名筛选资料；按关键词检索资料**正文片段**（中文按二元词组匹配打分） |
-| Agent 对话 | 选择课程后向智能体提问，系统自动检索相关资料片段辅助回答，支持多轮对话与多个对话记录 |
+| Agent 对话 | 选择课程后向智能体提问，系统自动检索相关资料片段辅助回答，**SSE 流式输出**、多轮对话、多个对话记录 |
 | 学习计划 | 输入学习目标、截止时间、每日可用时间，生成阶段任务 + 每日待办 |
 | 待办任务 | 手动添加或由计划自动生成，支持完成勾选、逾期标红、按课程/状态筛选 |
 | 个人中心 | 课程 / 计划 / 任务 / 对话统计与快捷入口，资料与账号管理 |
@@ -165,6 +165,7 @@ pytest tests/ -v
 | GET/DELETE | `/materials/{id}/download`、`/materials/{id}` | 下载 / 删除资料 |
 | POST/GET | `/courses/{id}/conversations` | 创建 / 列出对话 |
 | GET/POST | `/conversations/{id}/messages` | 查看历史 / 发送消息（返回引用）★ |
+| POST | `/conversations/{id}/messages/stream` | 流式发送消息（SSE：meta → delta* → done）★ |
 | POST | `/plans` | 生成学习计划（自动拆解任务）★ |
 | POST | `/plans/multi-course` | 多课程综合规划 ★ |
 | GET/POST | `/tasks`，PUT/DELETE `/tasks/{id}` | 任务 CRUD |
@@ -197,7 +198,7 @@ pytest tests/ -v
 ## Roadmap（后续版本）
 
 - [ ] 向量检索（Embedding）替换关键词检索，提升召回质量
-- [ ] 对话流式输出（SSE）
-- [ ] 资料支持 docx / pptx 解析
+- [x] 对话流式输出（SSE）
+- [x] 资料支持 docx / pptx 解析
 - [ ] 任务提醒与日历视图
 - [ ] Docker Compose 一键部署

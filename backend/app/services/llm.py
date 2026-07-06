@@ -73,6 +73,23 @@ def complete(system: str, user_content: str, max_tokens: int = 4096) -> str:
         raise LLMUnavailableError(str(exc)) from exc
 
 
+def stream_complete(system: str, user_content: str, max_tokens: int = 4096):
+    """流式文本补全：逐段产出文本增量；异常统一收敛为 LLMUnavailableError。"""
+    key = _api_key()
+    if not key:
+        raise LLMUnavailableError("未配置 LLM_API_KEY")
+    try:
+        if provider() == "openai":
+            yield from _stream_openai(key, system, user_content, max_tokens)
+        else:
+            yield from _stream_anthropic(key, system, user_content, max_tokens)
+    except LLMUnavailableError:
+        raise
+    except Exception as exc:
+        logger.warning("LLM 流式调用失败 [%s/%s]: %s", provider(), model_name(), exc)
+        raise LLMUnavailableError(str(exc)) from exc
+
+
 def complete_json(
     system: str, user_content: str, schema: dict, max_tokens: int = 8192
 ) -> dict:
@@ -114,6 +131,41 @@ def _complete_openai(key: str, system: str, user_content: str, max_tokens: int) 
         ],
     )
     return response.choices[0].message.content or ""
+
+
+def _stream_anthropic(key: str, system: str, user_content: str, max_tokens: int):
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key, base_url=_base_url())
+    with client.messages.stream(
+        model=model_name(),
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+    ) as stream:
+        for text in stream.text_stream:
+            if text:
+                yield text
+
+
+def _stream_openai(key: str, system: str, user_content: str, max_tokens: int):
+    from openai import OpenAI
+
+    client = OpenAI(api_key=key, base_url=_base_url())
+    response = client.chat.completions.create(
+        model=model_name(),
+        max_tokens=max_tokens,
+        stream=True,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    for chunk in response:
+        # 部分服务商会发送不含 choices 的用量统计块
+        delta = chunk.choices[0].delta.content if chunk.choices else None
+        if delta:
+            yield delta
 
 
 def _extract_json(text: str) -> dict:

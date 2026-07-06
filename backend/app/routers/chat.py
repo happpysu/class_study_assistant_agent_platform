@@ -1,7 +1,8 @@
-"""Agent 对话：围绕课程资料的智能问答（带资料来源引用）。"""
+"""Agent 对话：围绕课程资料的智能问答（带资料来源引用，支持 SSE 流式输出）。"""
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,7 @@ from ..schemas.chat import (
     SendMessageRequest,
 )
 from ..services import agent
+from ..services.llm import LLMUnavailableError
 from ..services.retrieval import search_chunks
 from ..services.security import get_current_user
 from .courses import get_owned_course
@@ -162,6 +164,86 @@ def send_message(
         user_message=_to_message_out(user_msg),
         assistant_message=_to_message_out(assistant_msg),
         agent_mode=result["agent_mode"],
+    )
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+def send_message_stream(
+    conversation_id: int,
+    payload: SendMessageRequest,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """流式发送消息（SSE）：meta（引用）→ delta（增量文本）* → done（落库结果）。"""
+    conv = _get_owned_conversation(conversation_id, current, db)
+    course = db.get(Course, conv.course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+
+    history_rows = (
+        db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.created_at, Message.id)
+        )
+        .scalars()
+        .all()
+    )
+    history = [{"role": m.role, "content": m.content} for m in history_rows]
+    chunks = search_chunks(db, course.id, payload.content, limit=6)
+    citations = agent.citations_for(chunks)
+
+    # 用户消息先落库，流中断也不丢提问
+    user_msg = Message(conversation_id=conv.id, role="user", content=payload.content)
+    db.add(user_msg)
+    if not history_rows and conv.title == "新对话":
+        conv.title = payload.content[:30]
+    db.commit()
+    db.refresh(user_msg)
+
+    def event_stream():
+        parts: list[str] = []
+        agent_mode = "llm"
+        yield _sse("meta", {"user_message_id": user_msg.id, "citations": citations})
+        try:
+            for delta in agent.stream_answer(
+                course.name, payload.content, chunks, history
+            ):
+                parts.append(delta)
+                yield _sse("delta", {"text": delta})
+        except LLMUnavailableError:
+            if parts:  # 生成中途断流：保留已有内容并注明
+                notice = "\n\n（回答在生成过程中中断，以上为部分内容）"
+                parts.append(notice)
+                yield _sse("delta", {"text": notice})
+            else:  # 完全不可用：整体降级
+                agent_mode = "fallback"
+                text = agent.fallback_answer(payload.content, chunks)
+                parts.append(text)
+                yield _sse("delta", {"text": text})
+
+        assistant_msg = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="".join(parts),
+            citations_json=json.dumps(citations, ensure_ascii=False),
+        )
+        db.add(assistant_msg)
+        db.commit()
+        db.refresh(assistant_msg)
+        yield _sse(
+            "done",
+            {"assistant_message_id": assistant_msg.id, "agent_mode": agent_mode},
+        )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

@@ -18,6 +18,10 @@ def extract_text(path: Path) -> str:
             return path.read_text(encoding="utf-8", errors="ignore")
         if suffix == ".pdf":
             return _extract_pdf(path)
+        if suffix == ".docx":
+            return _extract_docx(path)
+        if suffix == ".pptx":
+            return _extract_pptx(path)
     except Exception as exc:  # 抽取失败不应阻断上传
         logger.warning("文本抽取失败 %s: %s", path.name, exc)
     return ""
@@ -29,6 +33,37 @@ def _extract_pdf(path: Path) -> str:
     reader = PdfReader(str(path))
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n".join(pages)
+
+
+def _extract_docx(path: Path) -> str:
+    """Word 文档：段落 + 表格单元格文本。"""
+    from docx import Document
+
+    doc = Document(str(path))
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
+
+
+def _extract_pptx(path: Path) -> str:
+    """PPT 幻灯片：逐页提取所有文本框内容，标注页码便于引用定位。"""
+    from pptx import Presentation
+
+    pres = Presentation(str(path))
+    pages = []
+    for idx, slide in enumerate(pres.slides, start=1):
+        texts = [
+            shape.text_frame.text.strip()
+            for shape in slide.shapes
+            if shape.has_text_frame and shape.text_frame.text.strip()
+        ]
+        if texts:
+            pages.append(f"[第{idx}页]\n" + "\n".join(texts))
+    return "\n\n".join(pages)
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:

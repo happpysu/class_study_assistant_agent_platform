@@ -9,7 +9,7 @@ import {
   getCourse,
   listCourseConversations,
   listMessages,
-  sendMessage,
+  sendMessageStream,
 } from '../api'
 
 const route = useRoute()
@@ -62,26 +62,40 @@ async function send() {
     await newConversation()
   }
   input.value = ''
-  messages.value = [
-    ...messages.value,
-    { id: `tmp-${Date.now()}`, role: 'user', content, citations: [] },
-  ]
+  const userMsg = { id: `tmp-u-${Date.now()}`, role: 'user', content, citations: [] }
+  const assistantMsg = {
+    id: `tmp-a-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    citations: [],
+    streaming: true,
+  }
+  messages.value.push(userMsg, assistantMsg)
   scrollToBottom()
   sending.value = true
   try {
-    const { data } = await sendMessage(activeConvId.value, content)
-    lastAgentMode.value = data.agent_mode
-    messages.value = [
-      ...messages.value.slice(0, -1),
-      data.user_message,
-      data.assistant_message,
-    ]
-    scrollToBottom()
+    await sendMessageStream(activeConvId.value, content, {
+      onMeta: (meta) => {
+        userMsg.id = meta.user_message_id
+        assistantMsg.citations = meta.citations
+      },
+      onDelta: (text) => {
+        assistantMsg.content += text
+        scrollToBottom()
+      },
+      onDone: (result) => {
+        assistantMsg.id = result.assistant_message_id
+        assistantMsg.streaming = false
+        lastAgentMode.value = result.agent_mode
+      },
+    })
     await refreshConversations()
-  } catch {
-    messages.value = messages.value.slice(0, -1)
+  } catch (err) {
+    messages.value = messages.value.filter((m) => m !== userMsg && m !== assistantMsg)
     input.value = content
+    ElMessage.error(err.message || '发送失败，请稍后重试')
   } finally {
+    assistantMsg.streaming = false
     sending.value = false
   }
 }
@@ -138,7 +152,10 @@ onMounted(async () => {
           />
           <div v-for="msg in messages" :key="msg.id" class="msg" :class="msg.role">
             <div class="bubble">
-              <div v-if="msg.role === 'assistant'" class="md" v-html="renderMd(msg.content)" />
+              <template v-if="msg.role === 'assistant'">
+                <div v-if="msg.content" class="md" v-html="renderMd(msg.content)" />
+                <span v-else-if="msg.streaming" class="typing">思考中…</span>
+              </template>
               <template v-else>{{ msg.content }}</template>
               <div v-if="msg.citations?.length" class="citations">
                 <div class="citations-title">📎 参考资料：</div>
@@ -154,9 +171,6 @@ onMounted(async () => {
                 </el-tooltip>
               </div>
             </div>
-          </div>
-          <div v-if="sending" class="msg assistant">
-            <div class="bubble typing">思考中…</div>
           </div>
         </div>
         <div class="input-row">

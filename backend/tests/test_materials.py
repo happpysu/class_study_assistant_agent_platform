@@ -61,3 +61,72 @@ def test_upload_invalid_type(client, auth_headers):
     course_id = create_course(client, auth_headers)
     resp = _upload(client, auth_headers, course_id, mtype="bad-type")
     assert resp.status_code == 422
+
+
+def test_upload_docx_parsed_and_searchable(client, auth_headers):
+    import io
+
+    from docx import Document
+
+    course_id = create_course(client, auth_headers)
+    doc = Document()
+    doc.add_paragraph("第四章 多元函数微分学。偏导数是多元函数对单个自变量的导数。")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    resp = client.post(
+        f"/api/courses/{course_id}/materials",
+        files={
+            "file": (
+                "chap4.docx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"mtype": "courseware"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+    hits = client.get(
+        f"/api/courses/{course_id}/materials/search",
+        params={"q": "偏导数"},
+        headers=auth_headers,
+    ).json()
+    assert hits and hits[0]["material_name"] == "chap4.docx"
+
+
+def test_upload_pptx_parsed_and_searchable(client, auth_headers):
+    import io
+
+    from pptx import Presentation
+
+    course_id = create_course(client, auth_headers)
+    pres = Presentation()
+    slide = pres.slides.add_slide(pres.slide_layouts[1])
+    slide.shapes.title.text = "第五章 重积分"
+    slide.placeholders[1].text = "二重积分的几何意义是曲顶柱体的体积。"
+    buf = io.BytesIO()
+    pres.save(buf)
+
+    resp = client.post(
+        f"/api/courses/{course_id}/materials",
+        files={
+            "file": (
+                "chap5.pptx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+        },
+        data={"mtype": "courseware"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+    hits = client.get(
+        f"/api/courses/{course_id}/materials/search",
+        params={"q": "二重积分"},
+        headers=auth_headers,
+    ).json()
+    assert hits and hits[0]["material_name"] == "chap5.pptx"
+    assert "第1页" in hits[0]["excerpt"] or "二重积分" in hits[0]["excerpt"]

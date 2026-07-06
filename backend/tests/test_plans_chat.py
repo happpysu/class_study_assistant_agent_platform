@@ -104,6 +104,47 @@ def test_chat_with_citations(client, auth_headers):
     assert convs[0]["title"] == "什么是导数？"
 
 
+def test_chat_stream_fallback(client, auth_headers):
+    """SSE 流式端点：离线模式下应输出 meta/delta/done 三类事件并落库两条消息。"""
+    course_id = create_course(client, auth_headers, "线性代数")
+    client.post(
+        f"/api/courses/{course_id}/materials",
+        files={
+            "file": (
+                "matrix.txt",
+                "矩阵的秩是其行向量组的极大线性无关组所含向量个数。".encode(),
+                "text/plain",
+            )
+        },
+        data={"mtype": "notes"},
+        headers=auth_headers,
+    )
+    conv_id = client.post(
+        f"/api/courses/{course_id}/conversations", json={}, headers=auth_headers
+    ).json()["id"]
+
+    resp = client.post(
+        f"/api/conversations/{conv_id}/messages/stream",
+        json={"content": "什么是矩阵的秩？"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "event: meta" in body
+    assert "event: delta" in body
+    assert "event: done" in body
+    assert '"fallback"' in body  # 离线模式
+    assert "矩阵的秩" in body  # 降级回答包含检索片段
+
+    messages = client.get(
+        f"/api/conversations/{conv_id}/messages", headers=auth_headers
+    ).json()
+    assert len(messages) == 2
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["citations"]
+
+
 def test_conversation_isolated(client, auth_headers):
     from .conftest import register_and_login
 

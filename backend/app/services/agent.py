@@ -8,7 +8,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from .llm import LLMUnavailableError, complete, complete_json
+from .llm import LLMUnavailableError, complete, complete_json, stream_complete
 from .retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ PLAN_SCHEMA: dict[str, Any] = {
 _OFFLINE_HINT = "在 backend/.env 中配置 LLM_API_KEY（支持 Anthropic / OpenAI 兼容接口）以启用智能功能。"
 
 
-def _citations_from(chunks: list[RetrievedChunk]) -> list[dict]:
+def citations_for(chunks: list[RetrievedChunk]) -> list[dict]:
     return [
         {
             "index": i + 1,
@@ -76,37 +76,54 @@ def _context_block(chunks: list[RetrievedChunk]) -> str:
 
 # ---------------------------------------------------------------- 课程问答
 
+def _build_qa_prompt(
+    course_name: str, question: str, chunks: list[RetrievedChunk],
+    history: list[dict] | None,
+) -> tuple[str, str]:
+    system = (
+        f"你是《{course_name}》课程的学习助手。请优先基于给出的课程资料片段回答问题，"
+        "引用资料时在句末用 [编号] 标注来源；资料不足以回答时，明确说明后再给出一般性解答。"
+        "用简体中文回答，条理清晰。"
+    )
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "对话历史：\n" + "\n".join(
+            f"{m['role']}: {m['content'][:300]}" for m in recent
+        ) + "\n\n"
+    context = _context_block(chunks) if chunks else "（本课程暂无可检索的资料片段）"
+    user_content = f"{history_text}课程资料片段：\n{context}\n\n学生问题：{question}"
+    return system, user_content
+
+
 def answer_question(
     course_name: str, question: str, chunks: list[RetrievedChunk],
     history: list[dict] | None = None,
 ) -> dict:
     """基于检索到的资料片段回答问题，答案中以 [n] 标注引用来源。"""
-    citations = _citations_from(chunks)
+    citations = citations_for(chunks)
     try:
-        system = (
-            f"你是《{course_name}》课程的学习助手。请优先基于给出的课程资料片段回答问题，"
-            "引用资料时在句末用 [编号] 标注来源；资料不足以回答时，明确说明后再给出一般性解答。"
-            "用简体中文回答，条理清晰。"
-        )
-        history_text = ""
-        if history:
-            recent = history[-6:]
-            history_text = "对话历史：\n" + "\n".join(
-                f"{m['role']}: {m['content'][:300]}" for m in recent
-            ) + "\n\n"
-        context = _context_block(chunks) if chunks else "（本课程暂无可检索的资料片段）"
-        user_content = f"{history_text}课程资料片段：\n{context}\n\n学生问题：{question}"
+        system, user_content = _build_qa_prompt(course_name, question, chunks, history)
         answer = complete(system, user_content)
         return {"answer": answer, "citations": citations, "agent_mode": "llm"}
     except LLMUnavailableError:
         return {
-            "answer": _fallback_answer(question, chunks),
+            "answer": fallback_answer(question, chunks),
             "citations": citations,
             "agent_mode": "fallback",
         }
 
 
-def _fallback_answer(question: str, chunks: list[RetrievedChunk]) -> str:
+def stream_answer(
+    course_name: str, question: str, chunks: list[RetrievedChunk],
+    history: list[dict] | None = None,
+):
+    """流式问答：逐段产出回答文本；LLM 不可用时抛 LLMUnavailableError，由调用方降级。"""
+    system, user_content = _build_qa_prompt(course_name, question, chunks, history)
+    yield from stream_complete(system, user_content)
+
+
+def fallback_answer(question: str, chunks: list[RetrievedChunk]) -> str:
     if not chunks:
         return (
             "【离线模式】当前未配置大模型 API，且课程资料中未检索到与问题相关的内容。"
@@ -125,7 +142,7 @@ def _fallback_answer(question: str, chunks: list[RetrievedChunk]) -> str:
 # ---------------------------------------------------------------- 知识点整理
 
 def summarize_knowledge(course_name: str, chunks: list[RetrievedChunk]) -> dict:
-    sources = _citations_from(chunks)
+    sources = citations_for(chunks)
     if not chunks:
         return {
             "summary": "本课程还没有可用于整理的资料，请先上传课件、笔记等文本资料。",
