@@ -1,0 +1,10 @@
+# conda 环境定义：conda env create -f environment.yml
+# 更新环境：conda env update -f environment.yml --prune
+name: class-study
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements.txt

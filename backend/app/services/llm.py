@@ -10,6 +10,8 @@ import json
 import logging
 import os
 
+from .. import config  # noqa: F401  导入即触发 .env 加载，保证独立使用本模块时配置生效
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODELS = {"anthropic": "claude-opus-4-8", "openai": "gpt-4o-mini"}

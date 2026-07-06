@@ -45,17 +45,19 @@
 
 ## 快速开始
 
-### 1. 后端
+### 1. 后端（conda）
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+conda env create -f environment.yml   # 创建 class-study 环境（Python 3.12 + 全部依赖）
+conda activate class-study
 
 cp .env.example .env             # 编辑 .env，配置大模型（可选，见下方环境变量表）
 uvicorn app.main:app --reload --port 8000
 ```
+
+> 依赖有更新时执行 `conda env update -f environment.yml --prune`。
+> 不使用 conda 也可以用 `python3 -m venv .venv` + `pip install -r requirements.txt` 代替。
 
 - 接口文档（Swagger UI）：http://localhost:8000/docs
 - 不配置 API Key 也能启动，Agent 功能进入离线降级模式
@@ -75,6 +77,7 @@ npm run dev
 
 ```bash
 cd backend
+conda activate class-study
 pytest tests/ -v
 ```
 
@@ -104,7 +107,8 @@ pytest tests/ -v
 │   │       ├── extraction.py    # 文本抽取与切片
 │   │       └── security.py      # 密码哈希 / JWT
 │   ├── tests/                   # pytest 测试套件
-│   ├── requirements.txt
+│   ├── environment.yml          # conda 环境定义
+│   ├── requirements.txt         # pip 依赖清单（environment.yml 引用）
 │   └── .env.example
 ├── frontend/
 │   └── src/
