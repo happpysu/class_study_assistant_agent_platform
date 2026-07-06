@@ -52,9 +52,13 @@ cd backend
 conda env create -f environment.yml   # 创建 class-study 环境（Python 3.12 + 全部依赖）
 conda activate class-study
 
-cp .env.example .env             # 编辑 .env，配置大模型（可选，见下方环境变量表）
+cp -n .env.example .env          # 首次配置：复制模板（-n 保证不覆盖已有 .env）
+                                 # 然后编辑 .env，填入你的 API Key（可选，见下方环境变量表）
 uvicorn app.main:app --reload --port 8000
 ```
+
+> `.env.example` 只是模板（提交到仓库、无密钥）；真实密钥填在 `.env`（被 .gitignore 忽略）。
+> 已配置过 `.env` 的话跳过 cp 这一步，直接启动即可。
 
 > 依赖有更新时执行 `conda env update -f environment.yml --prune`。
 > 不使用 conda 也可以用 `python3 -m venv .venv` + `pip install -r requirements.txt` 代替。
