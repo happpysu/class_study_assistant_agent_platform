@@ -77,7 +77,21 @@ npm run dev
 
 访问 http://localhost:5173 （开发服务器已配置 `/api` 代理到后端 8000 端口）。
 
-### 3. 运行测试
+### 3. 日常启动（首次配置完成后）
+
+环境和 `.env` 都配置好之后，以后每次启动只需要两条命令（分别开两个终端）：
+
+```bash
+# 终端 1：后端（http://localhost:8000）
+cd backend && conda activate class-study && uvicorn app.main:app --reload --port 8000
+
+# 终端 2：前端（http://localhost:5173）
+cd frontend && npm run dev
+```
+
+浏览器访问 http://localhost:5173 即可使用。
+
+### 4. 运行测试
 
 ```bash
 cd backend
