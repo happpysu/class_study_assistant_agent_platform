@@ -56,6 +56,12 @@ def test_multi_course_plan(client, auth_headers):
     body = resp.json()
     assert body["plan_type"] == "multi"
     assert len(body["content"]["stages"]) == 2
+    plan_tasks = [
+        task
+        for task in client.get("/api/tasks", headers=auth_headers).json()
+        if task["plan_id"] == body["id"]
+    ]
+    assert {task["course_id"] for task in plan_tasks} == {id_a, id_b}
 
 
 def test_chat_with_citations(client, auth_headers):
@@ -102,6 +108,42 @@ def test_chat_with_citations(client, auth_headers):
         f"/api/courses/{course_id}/conversations", headers=auth_headers
     ).json()
     assert convs[0]["title"] == "什么是导数？"
+
+
+def test_non_stream_chat_uses_full_agent(client, auth_headers, monkeypatch):
+    """普通 JSON 接口也应运行工具循环，并返回本轮工具事件。"""
+    from app.services import agent
+
+    course_id = create_course(client, auth_headers, "离散数学（完整 Agent）")
+    conv_id = client.post(
+        f"/api/courses/{course_id}/conversations", json={}, headers=auth_headers
+    ).json()["id"]
+
+    def fake_agent(db, user_id, course, question, history, citations):
+        assert course.id == course_id
+        assert question == "帮我查集合的定义"
+        citations.append(
+            {
+                "index": 1,
+                "material_id": 123,
+                "material_name": "set.md",
+                "excerpt": "集合是对象的汇集",
+            }
+        )
+        yield "tool", {"name": "search_course_materials", "input": {"query": "集合 定义"}}
+        yield "text", "集合是对象的汇集。[1]"
+
+    monkeypatch.setattr(agent, "stream_agent_answer", fake_agent)
+    body = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "帮我查集合的定义"},
+        headers=auth_headers,
+    ).json()
+
+    assert body["agent_mode"] == "llm"
+    assert body["assistant_message"]["content"] == "集合是对象的汇集。[1]"
+    assert body["assistant_message"]["citations"][0]["material_name"] == "set.md"
+    assert body["tool_events"][0]["name"] == "search_course_materials"
 
 
 def test_chat_stream_fallback(client, auth_headers):

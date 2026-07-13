@@ -27,7 +27,12 @@ def _to_plan_out(plan: StudyPlan, agent_mode: str = "") -> PlanOut:
 
 
 def _create_tasks_from_plan(
-    db: Session, user_id: int, plan: StudyPlan, content: dict
+    db: Session,
+    user_id: int,
+    plan: StudyPlan,
+    content: dict,
+    allowed_course_ids: set[int] | None = None,
+    course_ids_by_name: dict[str, int] | None = None,
 ) -> None:
     """把计划中的每日待办落库为 Task（高级功能：智能任务拆解）。"""
     for item in content.get("daily_tasks", [])[:_MAX_AUTO_TASKS]:
@@ -35,10 +40,21 @@ def _create_tasks_from_plan(
             due = date.fromisoformat(str(item.get("date", "")))
         except ValueError:
             due = None
+        task_course_id = plan.course_id
+        if plan.plan_type == "multi":
+            task_course_id = None
+            try:
+                candidate = int(item.get("course_id"))
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and candidate in (allowed_course_ids or set()):
+                task_course_id = candidate
+            elif course_ids_by_name:
+                task_course_id = course_ids_by_name.get(str(item.get("course", "")))
         db.add(
             Task(
                 user_id=user_id,
-                course_id=plan.course_id,
+                course_id=task_course_id,
                 plan_id=plan.id,
                 title=str(item.get("title", "学习任务"))[:256],
                 detail=str(item.get("detail", ""))[:2000],
@@ -97,7 +113,12 @@ def create_multi_plan(
         if goal.deadline < date.today():
             raise HTTPException(status_code=422, detail="截止日期不能早于今天")
         course_goals.append(
-            {"course_name": course.name, "goal": goal.goal, "deadline": goal.deadline}
+            {
+                "course_id": course.id,
+                "course_name": course.name,
+                "goal": goal.goal,
+                "deadline": goal.deadline,
+            }
         )
 
     result = agent.generate_multi_plan(course_goals, payload.daily_hours)
@@ -116,7 +137,23 @@ def create_multi_plan(
     )
     db.add(plan)
     db.flush()
-    _create_tasks_from_plan(db, current.id, plan, result["content"])
+    course_name_counts = {
+        name: sum(1 for g in course_goals if g["course_name"] == name)
+        for name in {g["course_name"] for g in course_goals}
+    }
+    course_ids_by_name = {
+        g["course_name"]: g["course_id"]
+        for g in course_goals
+        if course_name_counts[g["course_name"]] == 1
+    }
+    _create_tasks_from_plan(
+        db,
+        current.id,
+        plan,
+        result["content"],
+        allowed_course_ids={g["course_id"] for g in course_goals},
+        course_ids_by_name=course_ids_by_name,
+    )
     db.commit()
     db.refresh(plan)
     return _to_plan_out(plan, result["agent_mode"])

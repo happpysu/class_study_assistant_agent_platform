@@ -2,7 +2,6 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { marked } from 'marked'
 import {
   deleteMaterial,
   getCourse,
@@ -12,6 +11,7 @@ import {
   searchMaterialContent,
   uploadMaterial,
 } from '../api'
+import { renderMarkdown } from '../utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,7 +35,7 @@ const typeLabels = {
   lab: '实验指导',
   other: '其他',
 }
-const summaryHtml = computed(() => (summary.value ? marked.parse(summary.value) : ''))
+const summaryHtml = computed(() => renderMarkdown(summary.value))
 
 async function refreshMaterials() {
   const params = {}

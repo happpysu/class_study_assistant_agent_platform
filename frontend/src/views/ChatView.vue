@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { marked } from 'marked'
 import {
   createConversation,
   deleteConversation,
@@ -11,6 +10,7 @@ import {
   listMessages,
   sendMessageStream,
 } from '../api'
+import { renderMarkdown } from '../utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,8 +24,6 @@ const input = ref('')
 const sending = ref(false)
 const lastAgentMode = ref('')
 const msgListEl = ref(null)
-
-const renderMd = (text) => marked.parse(text || '')
 
 function toolLabel(tool) {
   const input = tool.input || {}
@@ -191,7 +189,7 @@ onMounted(async () => {
                     🔧 {{ label }}
                   </div>
                 </div>
-                <div v-if="msg.content" class="md" v-html="renderMd(msg.content)" />
+                <div v-if="msg.content" class="md" v-html="renderMarkdown(msg.content)" />
                 <span v-else-if="msg.streaming" class="typing">思考中…</span>
               </template>
               <template v-else>{{ msg.content }}</template>

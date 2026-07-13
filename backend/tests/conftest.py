@@ -5,6 +5,7 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="csa_test_")
 os.environ["DATA_DIR"] = _tmp
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
+os.environ["JWT_SECRET"] = "test-only-secret-at-least-32-bytes-long"
 # 置为空串（而非删除）：load_dotenv 默认不覆盖已存在的变量，
 # 这样即使本地 backend/.env 配了真实密钥，测试也强制处于离线模式，绝不发起网络请求。
 for _var in (

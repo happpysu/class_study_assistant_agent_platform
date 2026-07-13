@@ -70,7 +70,7 @@ def test_material_tools(client, auth_headers):
         data={"mtype": "lab", "description": "实验一指导"},
         headers=auth_headers,
     )
-    db, execute, _ = _executor_for(client, auth_headers, course_id)
+    db, execute, citations = _executor_for(client, auth_headers, course_id)
     try:
         listed = json.loads(execute("list_materials", {}))
         assert listed["materials"][0]["filename"] == "lab1.txt"
@@ -78,6 +78,13 @@ def test_material_tools(client, auth_headers):
 
         content = json.loads(execute("read_material", {"material_id": material_id}))
         assert "词法分析" in content["content"]
+        assert content["citation_index"] == 1
+        assert citations[0]["material_id"] == material_id
+
+        # 重复通读同一资料沿用引用编号，不应制造重复来源。
+        again = json.loads(execute("read_material", {"material_id": material_id}))
+        assert again["citation_index"] == 1
+        assert len(citations) == 1
 
         assert "error" in json.loads(execute("read_material", {"material_id": 999999}))
     finally:

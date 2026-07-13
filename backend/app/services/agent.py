@@ -55,6 +55,10 @@ PLAN_SCHEMA: dict[str, Any] = {
                     "detail": {"type": "string"},
                     "hours": {"type": "number"},
                     "course": {"type": "string"},
+                    "course_id": {
+                        "type": ["integer", "null"],
+                        "description": "多课程计划中该任务所属的课程 ID",
+                    },
                 },
                 "required": ["date", "title", "detail", "hours", "course"],
                 "additionalProperties": False,
@@ -375,19 +379,41 @@ def make_tool_executor(
         if material is None or _own_course(material.course_id) is None:
             return {"error": f"资料 {material_id} 不存在"}
         chunks = db.execute(
-            select(MaterialChunk.content)
+            select(MaterialChunk)
             .where(MaterialChunk.material_id == material.id)
             .order_by(MaterialChunk.seq)
         ).scalars().all()
         if not chunks:
             return {"error": f"《{material.filename}》没有可读取的文本内容（可能是未解析的格式）"}
         # 切片有重叠，去重叠拼接后截断
-        text = chunks[0] + "".join(c[100:] for c in chunks[1:])
+        text = chunks[0].content + "".join(c.content[100:] for c in chunks[1:])
         truncated = len(text) > 4000
+        citation_index = next(
+            (
+                citation["index"]
+                for citation in citations_out
+                if citation["material_id"] == material.id
+            ),
+            None,
+        )
+        if citation_index is None:
+            first_chunk = chunks[0]
+            citation_index = len(citations_out) + 1
+            chunk_index[first_chunk.id] = citation_index
+            citations_out.append(
+                {
+                    "index": citation_index,
+                    "material_id": material.id,
+                    "material_name": material.filename,
+                    "excerpt": first_chunk.content[:_EXCERPT_LEN],
+                }
+            )
         return {
             "filename": material.filename,
             "content": text[:4000],
             "truncated": truncated,
+            "citation_index": citation_index,
+            "citation_hint": f"引用本资料时请标注 [{citation_index}]",
         }
 
     def _list_courses(_args: dict) -> dict:
@@ -695,11 +721,13 @@ def generate_multi_plan(course_goals: list[dict], daily_hours: float) -> dict:
         system = (
             "你是学习规划助手。学生同时学习多门课程，请综合各课程的目标与截止日期，"
             "按紧迫程度和任务量合理分配每日时间，生成综合学习安排："
-            "阶段任务（stages）+ 每日待办（daily_tasks，注明所属课程 course）。"
+            "阶段任务（stages）+ 每日待办（daily_tasks，注明所属课程 course 和 course_id；"
+            "course_id 必须使用下方给出的课程 ID）。"
             "日期一律使用 YYYY-MM-DD。"
         )
         goals_text = "\n".join(
-            f"- 《{g['course_name']}》目标：{g['goal']}，截止：{g['deadline'].isoformat()}"
+            f"- 课程 ID {g['course_id']}《{g['course_name']}》目标：{g['goal']}，"
+            f"截止：{g['deadline'].isoformat()}"
             for g in course_goals
         )
         user_content = (
@@ -778,6 +806,7 @@ def _fallback_multi_plan(course_goals: list[dict], today: date, daily_hours: flo
             "detail": f"每日约 {per_course} 小时",
             "hours": per_course,
             "course": g["course_name"],
+            "course_id": g["course_id"],
         }
         for d in range(min(total_days, 21))
         for g in course_goals

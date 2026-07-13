@@ -1,10 +1,22 @@
 """课程管理 CRUD 与知识点整理。"""
+import logging
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Conversation, Course, Material, MaterialChunk, Message, User
+from ..models import (
+    Conversation,
+    Course,
+    Material,
+    MaterialChunk,
+    Message,
+    StudyPlan,
+    Task,
+    User,
+)
 from ..schemas.chat import KnowledgeSummaryOut
 from ..schemas.course import CourseCreate, CourseOut, CourseUpdate
 from ..services import agent
@@ -12,6 +24,7 @@ from ..services.retrieval import sample_chunks
 from ..services.security import get_current_user
 
 router = APIRouter(prefix="/api/courses", tags=["courses"])
+logger = logging.getLogger(__name__)
 
 
 def get_owned_course(
@@ -75,7 +88,10 @@ def update_course(
 def delete_course(
     course: Course = Depends(get_owned_course), db: Session = Depends(get_db)
 ):
-    # 级联清理课程下的资料、切片与对话
+    # 资料与对话属于课程本身，随课程删除；计划和任务属于用户，保留但解除课程关联。
+    stored_paths = db.execute(
+        select(Material.stored_path).where(Material.course_id == course.id)
+    ).scalars().all()
     conv_ids = db.execute(
         select(Conversation.id).where(Conversation.course_id == course.id)
     ).scalars().all()
@@ -92,8 +108,19 @@ def delete_course(
     db.query(Material).filter(Material.course_id == course.id).delete(
         synchronize_session=False
     )
+    db.query(Task).filter(Task.course_id == course.id).update(
+        {Task.course_id: None}, synchronize_session=False
+    )
+    db.query(StudyPlan).filter(StudyPlan.course_id == course.id).update(
+        {StudyPlan.course_id: None}, synchronize_session=False
+    )
     db.delete(course)
     db.commit()
+    for stored_path in stored_paths:
+        try:
+            Path(stored_path).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("课程删除后清理上传文件失败 %s: %s", stored_path, exc)
 
 
 @router.post("/{course_id}/knowledge-summary", response_model=KnowledgeSummaryOut)

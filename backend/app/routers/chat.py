@@ -142,15 +142,36 @@ def send_message(
     )
     history = [{"role": m.role, "content": m.content} for m in history_rows]
 
-    chunks = search_chunks(db, course.id, payload.content, limit=6)
-    result = agent.answer_question(course.name, payload.content, chunks, history)
+    # 与流式接口使用同一套完整 Agent 循环；这里只是把增量事件聚合成普通 JSON 响应。
+    parts: list[str] = []
+    citations: list[dict] = []
+    tool_events: list[dict] = []
+    agent_mode = "llm"
+    try:
+        for kind, data in agent.stream_agent_answer(
+            db, current.id, course, payload.content, history, citations
+        ):
+            if kind == "text":
+                parts.append(data)
+            elif kind == "tool":
+                tool_events.append(data)
+    except LLMUnavailableError:
+        if parts:
+            parts.append("\n\n（回答在生成过程中中断，以上为部分内容）")
+        else:
+            agent_mode = "fallback"
+            chunks = search_chunks(db, course.id, payload.content, limit=6)
+            citations = agent.citations_for(chunks)
+            parts = [agent.fallback_answer(payload.content, chunks)]
+
+    answer = "".join(parts)
 
     user_msg = Message(conversation_id=conv.id, role="user", content=payload.content)
     assistant_msg = Message(
         conversation_id=conv.id,
         role="assistant",
-        content=result["answer"],
-        citations_json=json.dumps(result["citations"], ensure_ascii=False),
+        content=answer,
+        citations_json=json.dumps(citations, ensure_ascii=False),
     )
     db.add_all([user_msg, assistant_msg])
     # 首条消息时用问题内容作为对话标题
@@ -163,7 +184,8 @@ def send_message(
     return ChatReply(
         user_message=_to_message_out(user_msg),
         assistant_message=_to_message_out(assistant_msg),
-        agent_mode=result["agent_mode"],
+        agent_mode=agent_mode,
+        tool_events=tool_events,
     )
 
 

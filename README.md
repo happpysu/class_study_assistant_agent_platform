@@ -116,12 +116,18 @@ cd frontend && npm run dev
 ### 4. 运行测试
 
 ```bash
+# 后端
 cd backend
 conda activate class-study
 pytest tests/ -v
+
+# 前端
+cd ../frontend
+npm test
+npm run build
 ```
 
-测试使用独立临时数据库并强制离线模式，不消耗 API 额度。
+后端业务测试使用独立临时数据库并强制离线模式，不消耗 API 额度；LLM 双协议工具循环通过模拟客户端验证，不会发起网络请求。
 
 ## 项目结构
 
@@ -187,7 +193,7 @@ pytest tests/ -v
 | GET | `/courses/{id}/materials/search?q=` | 资料内容检索 |
 | GET/DELETE | `/materials/{id}/download`、`/materials/{id}` | 下载 / 删除资料 |
 | POST/GET | `/courses/{id}/conversations` | 创建 / 列出对话 |
-| GET/POST | `/conversations/{id}/messages` | 查看历史 / 发送消息（返回引用）★ |
+| GET/POST | `/conversations/{id}/messages` | 查看历史 / 通过完整 Agent 发送消息（返回引用与工具事件）★ |
 | POST | `/conversations/{id}/messages/stream` | Agent 流式对话（SSE：meta → tool*/delta* → done）★ |
 | GET | `/tasks/reminders` | 任务提醒（已逾期 / 今天 / 3 天内到期） |
 | POST | `/plans` | 生成学习计划（自动拆解任务）★ |

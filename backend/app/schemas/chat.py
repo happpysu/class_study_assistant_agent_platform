@@ -40,6 +40,7 @@ class ChatReply(BaseModel):
     user_message: MessageOut
     assistant_message: MessageOut
     agent_mode: str  # llm / fallback
+    tool_events: list[dict[str, Any]] = []
 
 
 class KnowledgeSummaryOut(BaseModel):
